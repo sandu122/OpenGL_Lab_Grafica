@@ -11,6 +11,46 @@ struct Point {
     float x, y, z;
 };
 
+// --- Interactive rotation state ---
+static float g_rotX = 0.0f, g_rotY = 0.0f;
+static bool  g_dragging = false;
+static int   g_lastX = 0, g_lastY = 0;
+static float g_sensitivity = 0.5f;
+
+// Mouse button callback
+void OnMouseButton(int button, int state, int x, int y) {
+    if (button == GLUT_LEFT_BUTTON) {
+        if (state == GLUT_DOWN) { g_dragging = true; g_lastX = x; g_lastY = y; }
+        else                    { g_dragging = false; }
+    }
+}
+
+// Mouse motion callback (while dragging)
+void OnMouseMove(int x, int y) {
+    if (!g_dragging) return;
+    int dx = x - g_lastX;
+    int dy = y - g_lastY;
+    g_rotY += dx * g_sensitivity;   // horizontal drag rotates around Y
+    g_rotX += dy * g_sensitivity;   // vertical drag rotates around X
+    g_lastX = x; g_lastY = y;
+    glutPostRedisplay();
+}
+
+// Arrow keys for rotation, R to reset
+void OnSpecialKey(int key, int, int) {
+    const float step = 3.0f;
+    switch (key) {
+    case GLUT_KEY_LEFT:  g_rotY -= step; break;
+    case GLUT_KEY_RIGHT: g_rotY += step; break;
+    case GLUT_KEY_UP:    g_rotX -= step; break;
+    case GLUT_KEY_DOWN:  g_rotX += step; break;
+    }
+    glutPostRedisplay();
+}
+void OnKeyboard(unsigned char key, int, int) {
+    if (key == 'r' || key == 'R') { g_rotX = g_rotY = 0.0f; glutPostRedisplay(); }
+}
+
 // Funcție pentru evaluarea unei curbe Bézier cubice
 Point bezier(const Point& p0, const Point& p1, const Point& p2, const Point& p3, float t) {
     float u = 1 - t;
@@ -140,8 +180,14 @@ void display() {
 
     glPushMatrix();
     glTranslated(0., 0., -6.0);
+
+    // Orientare inițială
     glRotated(35., 1., 0., 0.);
     glRotated(-35., 0., 1., 0.);
+
+    // Rotiri interactive
+    glRotated(g_rotX, 1., 0., 0.);
+    glRotated(g_rotY, 0., 1., 0.);
 
     // Axe fără iluminare pentru vizibilitate
     glDisable(GL_LIGHTING);
@@ -153,7 +199,7 @@ void display() {
     glEnd();
     glEnable(GL_LIGHTING);
 
-    // Conuri la capete (au normale interne din GLUT, vor fi iluminate)
+    // Conuri la capete
     glColor3d(1, 0, 0);
     glPushMatrix(); glTranslated(5.3f, 0.0f, 0.0f); glRotated(90, 0, 1, 0); glutSolidCone(0.1f, 0.2f, 16, 16); glPopMatrix();
     glColor3d(0, 1, 0);
@@ -180,16 +226,21 @@ int main() {
     glutIdleFunc(display);
     glutReshapeFunc(resize);
 
+    // Register interaction
+    glutMouseFunc(OnMouseButton);
+    glutMotionFunc(OnMouseMove);
+    glutSpecialFunc(OnSpecialKey);
+    glutKeyboardFunc(OnKeyboard);
+
     // Stare OpenGL
     glEnable(GL_DEPTH_TEST);
 
     // Iluminare: sursa L0 + material
     glEnable(GL_LIGHTING);
     glEnable(GL_LIGHT0);
-    glEnable(GL_NORMALIZE);         // normalizare automată (sigură la transformări)
+    glEnable(GL_NORMALIZE);
     glShadeModel(GL_SMOOTH);
 
-    // Intensități lumină
     GLfloat L0_amb[]  = { 0.25f, 0.25f, 0.25f, 1.0f };
     GLfloat L0_diff[] = { 0.95f, 0.95f, 0.95f, 1.0f };
     GLfloat L0_spec[] = { 0.85f, 0.85f, 0.85f, 1.0f };
@@ -197,7 +248,6 @@ int main() {
     glLightfv(GL_LIGHT0, GL_DIFFUSE,  L0_diff);
     glLightfv(GL_LIGHT0, GL_SPECULAR, L0_spec);
 
-    // Material: folosește culoarea curentă pentru ambient+difuz
     glEnable(GL_COLOR_MATERIAL);
     glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
     GLfloat matSpec[] = { 0.5f, 0.5f, 0.5f, 1.0f };
