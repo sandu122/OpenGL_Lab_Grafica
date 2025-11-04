@@ -78,24 +78,45 @@ void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float
         base.insert(base.end(), rotated.begin(), rotated.end());
     }
 
-    // Suprafața laterală: triunghiuri cu vârful în origine
+    // Suprafața laterală: triunghiuri cu vârful în origine (cu normale pentru iluminare)
     glColor3d(0.7, 0.2, 0.8);
+
     glBegin(GL_TRIANGLES);
     for (size_t i = 0; i < base.size(); i++) {
         size_t j = (i + 1) % base.size();
-        glVertex3f(0.0f, 0.0f, 0.0f);
-        glVertex3f(base[i].x, base[i].y, base[i].z);
-        glVertex3f(base[j].x, base[j].y, base[j].z);
+
+        // vârfuri (originea și două puncte consecutive din bază)
+        Point v0{0.0f, 0.0f, 0.0f};
+        const Point& v1 = base[i];
+        const Point& v2 = base[j];
+
+        // normale flat: n = normalize( (v2 - v0) x (v1 - v0) ) -> orientare spre exterior
+        Point a{v2.x - v0.x, v2.y - v0.y, v2.z - v0.z};
+        Point b{v1.x - v0.x, v1.y - v0.y, v1.z - v0.z};
+        Point n{
+            a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x
+        };
+        float len = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        if (len > 0.0f) { n.x /= len; n.y /= len; n.z /= len; } else { n = {1.0f, 0.0f, 0.0f}; }
+
+        glNormal3f(n.x, n.y, n.z);
+        glVertex3f(v0.x, v0.y, v0.z);
+        glVertex3f(v1.x, v1.y, v1.z);
+        glVertex3f(v2.x, v2.y, v2.z);
     }
     glEnd();
 
-    // Baza (wireframe)
+    // Baza (wireframe) fără iluminare pentru claritate
+    glDisable(GL_LIGHTING);
     glColor3d(0.2, 0.5, 0.9);
     glBegin(GL_LINE_LOOP);
     for (auto& p : base) {
         glVertex3f(p.x, p.y, p.z);
     }
     glEnd();
+    glEnable(GL_LIGHTING);
 }
 
 void resize(int width, int height) {
@@ -109,20 +130,30 @@ void resize(int width, int height) {
 void display() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    // Actualizăm poziția sursei de lumină (spațiu lume)
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+    GLfloat lightPos[]  = { 5.0f, 8.0f, 7.0f, 1.0f }; // lumină punctuală
+    glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
+    glPopMatrix();
+
     glPushMatrix();
     glTranslated(0., 0., -6.0);
     glRotated(35., 1., 0., 0.);
     glRotated(-35., 0., 1., 0.);
 
-    // Axe
+    // Axe fără iluminare pentru vizibilitate
+    glDisable(GL_LIGHTING);
     glLineWidth(1.5f);
     glBegin(GL_LINES);
     glColor3d(1., 0., 0.); glVertex3d(-5.5, 0., 0.); glVertex3d(5.5, 0., 0.);
     glColor3d(0., 1., 0.); glVertex3d(0., -5.5, 0.); glVertex3d(0., 5.5, 0.);
     glColor3d(0., 0., 1.); glVertex3d(0., 0., -5.5); glVertex3d(0., 0., 5.5);
     glEnd();
+    glEnable(GL_LIGHTING);
 
-    // Conuri la capete
+    // Conuri la capete (au normale interne din GLUT, vor fi iluminate)
     glColor3d(1, 0, 0);
     glPushMatrix(); glTranslated(5.3f, 0.0f, 0.0f); glRotated(90, 0, 1, 0); glutSolidCone(0.1f, 0.2f, 16, 16); glPopMatrix();
     glColor3d(0, 1, 0);
@@ -130,8 +161,7 @@ void display() {
     glColor3d(0, 0, 1);
     glPushMatrix(); glTranslated(0.0f, 0.0f, 5.3f); glutSolidCone(0.1f, 0.2f, 16, 16); glPopMatrix();
 
-    // Conul Bézier cu distanță innerR față de axă
-    // Ajustați innerR/outerR/sweepDeg după nevoie
+    // Conul Bézier cu iluminare (normale setate în drawBezierCone)
     drawBezierCone(3.0f, 60, 0.5f, 2.5f, 0.0f);
 
     glPopMatrix();
@@ -150,7 +180,30 @@ int main() {
     glutIdleFunc(display);
     glutReshapeFunc(resize);
 
+    // Stare OpenGL
     glEnable(GL_DEPTH_TEST);
+
+    // Iluminare: sursa L0 + material
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
+    glEnable(GL_NORMALIZE);         // normalizare automată (sigură la transformări)
+    glShadeModel(GL_SMOOTH);
+
+    // Intensități lumină
+    GLfloat L0_amb[]  = { 0.25f, 0.25f, 0.25f, 1.0f };
+    GLfloat L0_diff[] = { 0.95f, 0.95f, 0.95f, 1.0f };
+    GLfloat L0_spec[] = { 0.85f, 0.85f, 0.85f, 1.0f };
+    glLightfv(GL_LIGHT0, GL_AMBIENT,  L0_amb);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE,  L0_diff);
+    glLightfv(GL_LIGHT0, GL_SPECULAR, L0_spec);
+
+    // Material: folosește culoarea curentă pentru ambient+difuz
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+    GLfloat matSpec[] = { 0.5f, 0.5f, 0.5f, 1.0f };
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, matSpec);
+    glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 32.0f);
+
     glClearColor(1.f, 1.f, 1.f, 1.f);
 
     glutMainLoop();
