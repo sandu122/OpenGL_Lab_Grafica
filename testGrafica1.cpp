@@ -104,57 +104,189 @@ std::vector<Point> rotatePetal(const std::vector<Point>& petal, float angleDeg) 
     return rotated;
 }
 
-// Desenează un "con" cu baza formată din 4 petale Bézier
-void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float outerR = 2.4f, float sweepDeg = 0.0f) {
+// Helper to accumulate and normalize vertex normals
+struct AccumNormal { double x=0, y=0, z=0; };
+static void addNormal(AccumNormal& acc, const Point& n) { acc.x += n.x; acc.y += n.y; acc.z += n.z; }
+static Point normalize(const AccumNormal& acc) {
+    double len = std::sqrt(acc.x*acc.x + acc.y*acc.y + acc.z*acc.z);
+    if (len <= 1e-9) return {0.f,0.f,1.f};
+    return { (float)(acc.x/len), (float)(acc.y/len), (float)(acc.z/len) };
+}
+
+static float segLen(const Point& a, const Point& b) {
+    float dx=b.x-a.x, dy=b.y-a.y, dz=b.z-a.z;
+    return std::sqrt(dx*dx+dy*dy+dz*dz);
+}
+
+static std::vector<Point> resampleClosedLoop(const std::vector<Point>& loop, int target) {
+    std::vector<Point> out; out.reserve(target);
+    const int N = (int)loop.size();
+    if (N == 0 || target <= 0) return out;
+
+    // cumulative chord lengths
+    std::vector<float> acc(N+1, 0.0f);
+    for (int i=0; i<N; ++i) acc[i+1] = acc[i] + segLen(loop[i], loop[(i+1)%N]);
+    float total = acc[N];
+    if (total <= 0.0f) { // degenerate, just duplicate a point
+        out.assign(target, loop[0]); return out;
+    }
+
+    // sample uniformly by arc length
+    int j = 0;
+    for (int k=0; k<target; ++k) {
+        float s = (total * k) / target; // target arc-length
+        // advance j so that acc[j] <= s < acc[j+1]
+        while (j+1 < (int)acc.size() && acc[j+1] < s) ++j;
+        float segStart = acc[j];
+        float segEnd   = acc[j+1];
+        float t = (segEnd > segStart) ? (s - segStart) / (segEnd - segStart) : 0.0f;
+
+        const Point& a = loop[j % N];
+        const Point& b = loop[(j+1) % N];
+        out.push_back({ a.x + (b.x-a.x)*t, a.y + (b.y-a.y)*t, a.z + (b.z-a.z)*t });
+    }
+    return out;
+}
+
+// Modify the signature to add 'sectors' (last arg). Keep default as -1 to preserve current behavior.
+void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float outerR = 2.4f, float sweepDeg = 0.0f, int layers = -1, int sectors = -1) {
+    if (layers < 0) layers = samples;
+
+    // Build the base exactly like before (smooth curve with 'samples')
     std::vector<Point> base;
     base.reserve((size_t)(samples + 1) * 4);
-
-    // O petală cu start/finish la distanța innerR față de axă
     auto petal = generatePetal(L, samples, innerR, outerR, sweepDeg);
-
-    // Rotim petala de 4 ori (0, 90, 180, 270)
     for (int k = 0; k < 4; k++) {
         auto rotated = rotatePetal(petal, k * 90.0f);
         base.insert(base.end(), rotated.begin(), rotated.end());
     }
 
-    // Suprafața laterală: triunghiuri cu vârful în origine (cu normale pentru iluminare)
-    glColor3d(0.7, 0.2, 0.8);
+    // If a sector count is requested, resample the closed base loop to exactly 'sectors' points
+    if (sectors > 0) {
+        base = resampleClosedLoop(base, sectors);
+    }
+    sectors = (int)base.size();
 
-    glBegin(GL_TRIANGLES);
-    for (size_t i = 0; i < base.size(); i++) {
-        size_t j = (i + 1) % base.size();
+    // Build rings apex->base
+    std::vector<std::vector<Point>> rings(layers + 1, std::vector<Point>(sectors));
+    for (int r = 0; r <= layers; ++r) {
+        float s = (float)r / (float)layers;
+        for (int i = 0; i < sectors; ++i) {
+            rings[r][i] = { base[i].x * s, base[i].y * s, base[i].z * s };
+        }
+    }
 
-        // vârfuri (originea și două puncte consecutive din bază)
-        Point v0{0.0f, 0.0f, 0.0f};
-        const Point& v1 = base[i];
-        const Point& v2 = base[j];
-
-        // normale flat: n = normalize( (v2 - v0) x (v1 - v0) ) -> orientare spre exterior
-        Point a{v2.x - v0.x, v2.y - v0.y, v2.z - v0.z};
-        Point b{v1.x - v0.x, v1.y - v0.y, v1.z - v0.z};
+    // Smooth normals accumulation as in your current file
+    std::vector<std::vector<AccumNormal>> vnorm(layers + 1, std::vector<AccumNormal>(sectors));
+    auto faceNormal = [](const Point& a, const Point& b, const Point& c) {
+        Point u{ b.x - a.x, b.y - a.y, b.z - a.z };
+        Point v{ c.x - a.x, c.y - a.y, c.z - a.z };
         Point n{
-            a.y * b.z - a.z * b.y,
-            a.z * b.x - a.x * b.z,
-            a.x * b.y - a.y * b.x
+            u.y * v.z - u.z * v.y,
+            u.z * v.x - u.x * v.z,
+            u.x * v.y - u.y * v.x
         };
-        float len = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
-        if (len > 0.0f) { n.x /= len; n.y /= len; n.z /= len; } else { n = {1.0f, 0.0f, 0.0f}; }
+        float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
+        if (len > 0) { n.x/=len; n.y/=len; n.z/=len; }
+        return n;
+    };
+    for (int r = 0; r < layers; ++r) {
+        for (int i = 0; i < sectors; ++i) {
+            int inext = (i + 1) % sectors;
+            const Point& v00 = rings[r][i];
+            const Point& v01 = rings[r][inext];
+            const Point& v10 = rings[r+1][i];
+            const Point& v11 = rings[r+1][inext];
+            Point n1 = faceNormal(v00, v10, v11);
+            addNormal(vnorm[r][i], n1);
+            addNormal(vnorm[r+1][i], n1);
+            addNormal(vnorm[r+1][inext], n1);
+            Point n2 = faceNormal(v00, v11, v01);
+            addNormal(vnorm[r][i], n2);
+            addNormal(vnorm[r+1][inext], n2);
+            addNormal(vnorm[r][inext], n2);
+        }
+    }
 
-        glNormal3f(n.x, n.y, n.z);
-        glVertex3f(v0.x, v0.y, v0.z);
-        glVertex3f(v1.x, v1.y, v1.z);
-        glVertex3f(v2.x, v2.y, v2.z);
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(1.0f, 1.0f);
+
+    glColor3d(0.7, 0.2, 0.8);
+    glBegin(GL_TRIANGLES);
+    for (int r = 0; r < layers; ++r) {
+        for (int i = 0; i < sectors; ++i) {
+            int inext = (i + 1) % sectors;
+            const Point& v00 = rings[r][i];
+            const Point& v01 = rings[r][inext];
+            const Point& v10 = rings[r+1][i];
+            const Point& v11 = rings[r+1][inext];
+
+            Point n00 = normalize(vnorm[r][i]);
+            Point n10 = normalize(vnorm[r+1][i]);
+            Point n11 = normalize(vnorm[r+1][inext]);
+            Point n01 = normalize(vnorm[r][inext]);
+
+            // Tri 1
+            glNormal3f(n00.x,n00.y,n00.z); glVertex3f(v00.x,v00.y,v00.z);
+            glNormal3f(n10.x,n10.y,n10.z); glVertex3f(v10.x,v10.y,v10.z);
+            glNormal3f(n11.x,n11.y,n11.z); glVertex3f(v11.x,v11.y,v11.z);
+
+            // Tri 2
+            glNormal3f(n00.x,n00.y,n00.z); glVertex3f(v00.x,v00.y,v00.z);
+            glNormal3f(n11.x,n11.y,n11.z); glVertex3f(v11.x,v11.y,v11.z);
+            glNormal3f(n01.x,n01.y,n01.z); glVertex3f(v01.x,v01.y,v01.z);
+        }
     }
     glEnd();
 
-    // Baza (wireframe) fără iluminare pentru claritate
+    glDisable(GL_POLYGON_OFFSET_FILL);
+
+    // Mesh overlay: rings, spokes, diagonals (unchanged logic)
+    glDisable(GL_LIGHTING);
+    glColor3d(0.1, 0.1, 0.1);
+    glLineWidth(1.0f);
+
+    // Inele
+    for (int r = 0; r <= layers; ++r) {
+        glBegin(GL_LINE_LOOP);
+        for (int i = 0; i < sectors; ++i) {
+            const Point& v = rings[r][i];
+            glVertex3f(v.x, v.y, v.z);
+        }
+        glEnd();
+    }
+
+    // Spițe (apex -> bază pe fiecare sector)
+    for (int i = 0; i < sectors; ++i) {
+        glBegin(GL_LINE_STRIP);
+        for (int r = 0; r <= layers; ++r) {
+            const Point& v = rings[r][i];
+            glVertex3f(v.x, v.y, v.z);
+        }
+        glEnd();
+    }
+
+    // Diagonale de triangulare pentru fiecare patrulater
+    glColor3d(0.2, 0.2, 0.2);
+    glBegin(GL_LINES);
+    for (int r = 0; r < layers; ++r) {
+        for (int i = 0; i < sectors; ++i) {
+            int inext = (i + 1) % sectors;
+            const Point& v00 = rings[r][i];
+            const Point& v11 = rings[r+1][inext];
+            glVertex3f(v00.x, v00.y, v00.z);
+            glVertex3f(v11.x, v11.y, v11.z);
+        }
+    }
+    glEnd();
+
+    glEnable(GL_LIGHTING);
+
+    // Baza ca wireframe (opțional, neschimbat)
     glDisable(GL_LIGHTING);
     glColor3d(0.2, 0.5, 0.9);
     glBegin(GL_LINE_LOOP);
-    for (auto& p : base) {
-        glVertex3f(p.x, p.y, p.z);
-    }
+    for (int i = 0; i < sectors; ++i) glVertex3f(base[i].x, base[i].y, base[i].z);
     glEnd();
     glEnable(GL_LIGHTING);
 }
@@ -170,11 +302,11 @@ void resize(int width, int height) {
 void display() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Actualizăm poziția sursei de lumină (spațiu lume)
+    // Poziția sursei de lumină (fără a schimba parametrii luminii)
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
     glLoadIdentity();
-    GLfloat lightPos[]  = { 5.0f, 8.0f, 7.0f, 1.0f }; // lumină punctuală
+    GLfloat lightPos[]  = { 5.0f, 8.0f, 7.0f, 1.0f };
     glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
     glPopMatrix();
 
@@ -199,7 +331,7 @@ void display() {
     glEnd();
     glEnable(GL_LIGHTING);
 
-    // Conuri la capete
+    // Conuri la capete (iluminate)
     glColor3d(1, 0, 0);
     glPushMatrix(); glTranslated(5.3f, 0.0f, 0.0f); glRotated(90, 0, 1, 0); glutSolidCone(0.1f, 0.2f, 16, 16); glPopMatrix();
     glColor3d(0, 1, 0);
@@ -207,8 +339,8 @@ void display() {
     glColor3d(0, 0, 1);
     glPushMatrix(); glTranslated(0.0f, 0.0f, 5.3f); glutSolidCone(0.1f, 0.2f, 16, 16); glPopMatrix();
 
-    // Conul Bézier cu iluminare (normale setate în drawBezierCone)
-    drawBezierCone(3.0f, 60, 0.5f, 2.5f, 0.0f);
+    // Surface + interior mesh with 7 layers
+    drawBezierCone(3.0f, 60 /*samples for curve smoothness*/, 0.5f, 2.5f, 0.0f /*sweep*/, 7 /*layers*/, 96 /*sectors*/);
 
     glPopMatrix();
     glutSwapBuffers();
@@ -226,7 +358,7 @@ int main() {
     glutIdleFunc(display);
     glutReshapeFunc(resize);
 
-    // Register interaction
+    // Interacțiune
     glutMouseFunc(OnMouseButton);
     glutMotionFunc(OnMouseMove);
     glutSpecialFunc(OnSpecialKey);
@@ -235,12 +367,13 @@ int main() {
     // Stare OpenGL
     glEnable(GL_DEPTH_TEST);
 
-    // Iluminare: sursa L0 + material
+    // Iluminare existentă (nu modificăm valorile)
     glEnable(GL_LIGHTING);
     glEnable(GL_LIGHT0);
     glEnable(GL_NORMALIZE);
     glShadeModel(GL_SMOOTH);
 
+    // Valorile tale curente
     GLfloat L0_amb[]  = { 0.25f, 0.25f, 0.25f, 1.0f };
     GLfloat L0_diff[] = { 0.95f, 0.95f, 0.95f, 1.0f };
     GLfloat L0_spec[] = { 0.85f, 0.85f, 0.85f, 1.0f };
