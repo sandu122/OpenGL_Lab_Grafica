@@ -150,7 +150,7 @@ static std::vector<Point> resampleClosedLoop(const std::vector<Point>& loop, int
 
 // Modify the signature to add 'sectors' (last arg). Keep default as -1 to preserve current behavior.
 void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float outerR = 2.4f,
-                    float sweepDeg = 0.0f, int layers = -1, int sectors = -1) {
+                    float sweepDeg = 0.0f, int layers = -1, int sectors = -1, int windingSign = +1) {
     if (layers < 0) layers = samples;
 
     // Baza (curbă inițială)
@@ -176,7 +176,7 @@ void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float
         }
     }
 
-    // Normale netede pentru exterior
+    // Normale netedă pentru exterior
     std::vector<std::vector<AccumNormal>> vnorm(layers + 1, std::vector<AccumNormal>(sectors));
     auto faceNormal = [](const Point& a, const Point& b, const Point& c) {
         Point u{ b.x - a.x, b.y - a.y, b.z - a.z };
@@ -211,11 +211,11 @@ void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float
         }
     }
 
-    // Inversăm interpretarea fețelor front (CW în loc de CCW)
+    // Adjust front-face depending on mirror parity
     glEnable(GL_CULL_FACE);
-    glFrontFace(GL_CW); // schimbare cheie
+    glFrontFace(windingSign < 0 ? GL_CCW : GL_CW);
 
-    // PASS 1: Exterior neted (acum front = exterior)
+    // PASS 1: Exterior neted (front faces only)
     glCullFace(GL_BACK);
     glPolygonMode(GL_FRONT, GL_FILL);
     glColor3d(0.7, 0.2, 0.8);
@@ -244,12 +244,12 @@ void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float
     }
     glEnd();
 
-    // PASS 2: Interior doar linii (back faces după inversare)
+    // PASS 2: Interior doar linii (back faces of the chosen winding)
     glDisable(GL_LIGHTING);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    glCullFace(GL_FRONT);              // acum desenăm fețele interioare (cele CW originale)
+    glCullFace(GL_FRONT);
     glPolygonMode(GL_BACK, GL_LINE);
     glLineWidth(1.2f);
     glColor4f(0.f, 0.f, 0.f, 0.35f);
@@ -282,7 +282,7 @@ void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float
     glEnable(GL_LIGHTING);
     glDisable(GL_CULL_FACE);
 
-    // (Opțional) contur bază exterior
+    // (Optional) base outline
     glDisable(GL_LIGHTING);
     glColor3d(0.2, 0.5, 0.9);
     glBegin(GL_LINE_LOOP);
@@ -302,7 +302,7 @@ void resize(int width, int height) {
 void display() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Poziția sursei de lumină (fără a schimba parametrii luminii)
+    // Light position (world space)
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
     glLoadIdentity();
@@ -312,16 +312,12 @@ void display() {
 
     glPushMatrix();
     glTranslated(0., 0., -6.0);
-
-    // Orientare inițială
     glRotated(35., 1., 0., 0.);
     glRotated(-35., 0., 1., 0.);
-
-    // Rotiri interactive
     glRotated(g_rotX, 1., 0., 0.);
     glRotated(g_rotY, 0., 1., 0.);
 
-    // Axe fără iluminare pentru vizibilitate
+    // Axes (unlit)
     glDisable(GL_LIGHTING);
     glLineWidth(1.5f);
     glBegin(GL_LINES);
@@ -331,16 +327,22 @@ void display() {
     glEnd();
     glEnable(GL_LIGHTING);
 
-    // Conuri la capete (iluminate)
+    // Conuri capete axe (optional)
     glColor3d(1, 0, 0);
-    glPushMatrix(); glTranslated(5.3f, 0.0f, 0.0f); glRotated(90, 0, 1, 0); glutSolidCone(0.1f, 0.2f, 16, 16); glPopMatrix();
+    glPushMatrix(); glTranslated(5.3, 0.0, 0.0); glRotated(90, 0, 1, 0); glutSolidCone(0.1, 0.2, 16, 16); glPopMatrix();
     glColor3d(0, 1, 0);
-    glPushMatrix(); glTranslated(0.0f, 5.3f, 0.0f); glRotated(-90, 1, 0, 0); glutSolidCone(0.1f, 0.2f, 16, 16); glPopMatrix();
+    glPushMatrix(); glTranslated(0.0, 5.3, 0.0); glRotated(-90, 1, 0, 0); glutSolidCone(0.1, 0.2, 16, 16); glPopMatrix();
     glColor3d(0, 0, 1);
-    glPushMatrix(); glTranslated(0.0f, 0.0f, 5.3f); glutSolidCone(0.1f, 0.2f, 16, 16); glPopMatrix();
+    glPushMatrix(); glTranslated(0.0, 0.0, 5.3); glutSolidCone(0.1, 0.2, 16, 16); glPopMatrix();
 
-    // Surface + interior mesh with 7 layers
-    drawBezierCone(3.0f, 60 /*samples for curve smoothness*/, 0.5f, 2.5f, 0.0f /*sweep*/, 7 /*layers*/, 96 /*sectors*/);
+    // Original cone: apex at origin, base toward +X
+    drawBezierCone(3.0f, 60, 0.5f, 2.5f, 0.0f, 7, 96, +1);
+
+    // Mirrored cone: apex at origin, base toward -X
+    glPushMatrix();
+    glScalef(-1.f, 1.f, 1.f);          // mirror across YZ plane
+    drawBezierCone(3.0f, 60, 0.5f, 2.5f, 0.0f, 7, 96, -1);
+    glPopMatrix();
 
     glPopMatrix();
     glutSwapBuffers();
