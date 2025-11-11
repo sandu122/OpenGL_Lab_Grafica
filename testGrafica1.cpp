@@ -149,25 +149,25 @@ static std::vector<Point> resampleClosedLoop(const std::vector<Point>& loop, int
 }
 
 // Modify the signature to add 'sectors' (last arg). Keep default as -1 to preserve current behavior.
-void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float outerR = 2.4f, float sweepDeg = 0.0f, int layers = -1, int sectors = -1) {
+void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float outerR = 2.4f,
+                    float sweepDeg = 0.0f, int layers = -1, int sectors = -1) {
     if (layers < 0) layers = samples;
 
-    // Build the base exactly like before (smooth curve with 'samples')
+    // Baza (curbă inițială)
     std::vector<Point> base;
     base.reserve((size_t)(samples + 1) * 4);
     auto petal = generatePetal(L, samples, innerR, outerR, sweepDeg);
-    for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < 4; ++k) {
         auto rotated = rotatePetal(petal, k * 90.0f);
         base.insert(base.end(), rotated.begin(), rotated.end());
     }
 
-    // If a sector count is requested, resample the closed base loop to exactly 'sectors' points
     if (sectors > 0) {
         base = resampleClosedLoop(base, sectors);
     }
     sectors = (int)base.size();
 
-    // Build rings apex->base
+    // Inele apex -> bază
     std::vector<std::vector<Point>> rings(layers + 1, std::vector<Point>(sectors));
     for (int r = 0; r <= layers; ++r) {
         float s = (float)r / (float)layers;
@@ -176,7 +176,7 @@ void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float
         }
     }
 
-    // Smooth normals accumulation as in your current file
+    // Normale netede pentru exterior
     std::vector<std::vector<AccumNormal>> vnorm(layers + 1, std::vector<AccumNormal>(sectors));
     auto faceNormal = [](const Point& a, const Point& b, const Point& c) {
         Point u{ b.x - a.x, b.y - a.y, b.z - a.z };
@@ -187,30 +187,37 @@ void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float
             u.x * v.y - u.y * v.x
         };
         float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
-        if (len > 0) { n.x/=len; n.y/=len; n.z/=len; }
+        if (len > 0) { n.x /= len; n.y /= len; n.z /= len; }
         return n;
     };
+
     for (int r = 0; r < layers; ++r) {
         for (int i = 0; i < sectors; ++i) {
             int inext = (i + 1) % sectors;
             const Point& v00 = rings[r][i];
             const Point& v01 = rings[r][inext];
-            const Point& v10 = rings[r+1][i];
-            const Point& v11 = rings[r+1][inext];
+            const Point& v10 = rings[r + 1][i];
+            const Point& v11 = rings[r + 1][inext];
+
             Point n1 = faceNormal(v00, v10, v11);
             addNormal(vnorm[r][i], n1);
-            addNormal(vnorm[r+1][i], n1);
-            addNormal(vnorm[r+1][inext], n1);
+            addNormal(vnorm[r + 1][i], n1);
+            addNormal(vnorm[r + 1][inext], n1);
+
             Point n2 = faceNormal(v00, v11, v01);
             addNormal(vnorm[r][i], n2);
-            addNormal(vnorm[r+1][inext], n2);
+            addNormal(vnorm[r + 1][inext], n2);
             addNormal(vnorm[r][inext], n2);
         }
     }
 
-    glEnable(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(1.0f, 1.0f);
+    // Inversăm interpretarea fețelor front (CW în loc de CCW)
+    glEnable(GL_CULL_FACE);
+    glFrontFace(GL_CW); // schimbare cheie
 
+    // PASS 1: Exterior neted (acum front = exterior)
+    glCullFace(GL_BACK);
+    glPolygonMode(GL_FRONT, GL_FILL);
     glColor3d(0.7, 0.2, 0.8);
     glBegin(GL_TRIANGLES);
     for (int r = 0; r < layers; ++r) {
@@ -218,75 +225,68 @@ void drawBezierCone(float L = 3.0f, int samples = 50, float innerR = 0.4f, float
             int inext = (i + 1) % sectors;
             const Point& v00 = rings[r][i];
             const Point& v01 = rings[r][inext];
-            const Point& v10 = rings[r+1][i];
-            const Point& v11 = rings[r+1][inext];
+            const Point& v10 = rings[r + 1][i];
+            const Point& v11 = rings[r + 1][inext];
 
             Point n00 = normalize(vnorm[r][i]);
-            Point n10 = normalize(vnorm[r+1][i]);
-            Point n11 = normalize(vnorm[r+1][inext]);
+            Point n10 = normalize(vnorm[r + 1][i]);
+            Point n11 = normalize(vnorm[r + 1][inext]);
             Point n01 = normalize(vnorm[r][inext]);
 
-            // Tri 1
-            glNormal3f(n00.x,n00.y,n00.z); glVertex3f(v00.x,v00.y,v00.z);
-            glNormal3f(n10.x,n10.y,n10.z); glVertex3f(v10.x,v10.y,v10.z);
-            glNormal3f(n11.x,n11.y,n11.z); glVertex3f(v11.x,v11.y,v11.z);
+            glNormal3f(n00.x, n00.y, n00.z); glVertex3f(v00.x, v00.y, v00.z);
+            glNormal3f(n10.x, n10.y, n10.z); glVertex3f(v10.x, v10.y, v10.z);
+            glNormal3f(n11.x, n11.y, n11.z); glVertex3f(v11.x, v11.y, v11.z);
 
-            // Tri 2
-            glNormal3f(n00.x,n00.y,n00.z); glVertex3f(v00.x,v00.y,v00.z);
-            glNormal3f(n11.x,n11.y,n11.z); glVertex3f(v11.x,v11.y,v11.z);
-            glNormal3f(n01.x,n01.y,n01.z); glVertex3f(v01.x,v01.y,v01.z);
+            glNormal3f(n00.x, n00.y, n00.z); glVertex3f(v00.x, v00.y, v00.z);
+            glNormal3f(n11.x, n11.y, n11.z); glVertex3f(v11.x, v11.y, v11.z);
+            glNormal3f(n01.x, n01.y, n01.z); glVertex3f(v01.x, v01.y, v01.z);
         }
     }
     glEnd();
 
-    glDisable(GL_POLYGON_OFFSET_FILL);
-
-    // Mesh overlay: rings, spokes, diagonals (unchanged logic)
+    // PASS 2: Interior doar linii (back faces după inversare)
     glDisable(GL_LIGHTING);
-    glColor3d(0.1, 0.1, 0.1);
-    glLineWidth(1.0f);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // Inele
-    for (int r = 0; r <= layers; ++r) {
-        glBegin(GL_LINE_LOOP);
-        for (int i = 0; i < sectors; ++i) {
-            const Point& v = rings[r][i];
-            glVertex3f(v.x, v.y, v.z);
-        }
-        glEnd();
-    }
+    glCullFace(GL_FRONT);              // acum desenăm fețele interioare (cele CW originale)
+    glPolygonMode(GL_BACK, GL_LINE);
+    glLineWidth(1.2f);
+    glColor4f(0.f, 0.f, 0.f, 0.35f);
 
-    // Spițe (apex -> bază pe fiecare sector)
-    for (int i = 0; i < sectors; ++i) {
-        glBegin(GL_LINE_STRIP);
-        for (int r = 0; r <= layers; ++r) {
-            const Point& v = rings[r][i];
-            glVertex3f(v.x, v.y, v.z);
-        }
-        glEnd();
-    }
-
-    // Diagonale de triangulare pentru fiecare patrulater
-    glColor3d(0.2, 0.2, 0.2);
-    glBegin(GL_LINES);
+    glBegin(GL_TRIANGLES);
     for (int r = 0; r < layers; ++r) {
         for (int i = 0; i < sectors; ++i) {
             int inext = (i + 1) % sectors;
             const Point& v00 = rings[r][i];
-            const Point& v11 = rings[r+1][inext];
+            const Point& v01 = rings[r][inext];
+            const Point& v10 = rings[r + 1][i];
+            const Point& v11 = rings[r + 1][inext];
+
+            glVertex3f(v00.x, v00.y, v00.z);
+            glVertex3f(v10.x, v10.y, v10.z);
+            glVertex3f(v11.x, v11.y, v11.z);
+
             glVertex3f(v00.x, v00.y, v00.z);
             glVertex3f(v11.x, v11.y, v11.z);
+            glVertex3f(v01.x, v01.y, v01.z);
         }
     }
     glEnd();
 
+    // Restore state
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glFrontFace(GL_CCW);
+    glCullFace(GL_BACK);
+    glDisable(GL_BLEND);
     glEnable(GL_LIGHTING);
+    glDisable(GL_CULL_FACE);
 
-    // Baza ca wireframe (opțional, neschimbat)
+    // (Opțional) contur bază exterior
     glDisable(GL_LIGHTING);
     glColor3d(0.2, 0.5, 0.9);
     glBegin(GL_LINE_LOOP);
-    for (int i = 0; i < sectors; ++i) glVertex3f(base[i].x, base[i].y, base[i].z);
+    for (const auto& p : base) glVertex3f(p.x, p.y, p.z);
     glEnd();
     glEnable(GL_LIGHTING);
 }
